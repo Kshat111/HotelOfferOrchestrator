@@ -100,6 +100,16 @@ JSON per the spec, with a deliberate overlap set (e.g. 3–4 shared hotel names 
 prices) and some unique-per-supplier hotels. Support a `?simulateDown=true` query flag or an
 env-var toggle for Postman's "supplier down" test case.
 
+Supply an outage-simulation mechanism at two levels: a per-request `?simulateDown=true`
+query param on either mock endpoint (forces that single call to return a `5xx`, no
+restart needed), and a `SIMULATE_SUPPLIER_DOWN` environment variable (`none` | `a` | `b`)
+read by the mock endpoints at the server level, so the *whole* stack — including the
+Temporal workflow's own calls to these endpoints — treats a supplier as down until the
+containers are restarted without it. Only the env-var form produces genuine end-to-end
+degradation through `/api/hotels` and `/health`; the query-param form is scoped to
+whichever single request sets it. This variable exists purely to support integration
+tests and Postman demos and should never be set in a production deployment.
+
 ---
 
 ## 5. Data Model & Redis Schema
@@ -178,55 +188,9 @@ Even for an assessment-scale service, apply baseline hardening:
 
 ---
 
-## 8. Coding Best Practices
+## 8. Testing Strategy
 
-- **TypeScript strict mode** (`strict: true`), no implicit `any`, explicit return types on
-  exported functions.
-- **Layered structure** — separate `routes/`, `controllers`, `services` (Temporal client wrapper,
-  Redis wrapper), `workflows/`, `activities/`, `types/` (shared interfaces for `Hotel`, `HotelOffer`).
-- **Single source of truth for the `Hotel`/`HotelOffer` type** shared between mock suppliers,
-  activities, and API response serialization — avoid shape drift.
-- **Pure, unit-testable dedupe function** — `dedupeAndSelect(a: Hotel[], b: Hotel[]): HotelOffer[]`
-  lives outside Temporal-specific code so it can be tested with plain Jest, independent of any
-  Temporal test harness.
-- **Dependency injection for Redis/HTTP clients** in activities so they can be mocked in tests.
-- **Config via a single `config.ts`** reading `process.env` with validation/defaults at boot
-  (fail fast if `REDIS_URL` or `TEMPORAL_ADDRESS` is missing).
-- **Consistent linting/formatting** — ESLint + Prettier, enforced via a pre-commit hook or CI step.
-- **Meaningful commit history and a `CONTRIBUTING`-style note in the README** on how to run
-  locally vs. in Docker.
-- **No magic strings** — hotel name normalization, Redis key prefixes, activity names as
-  constants in one place.
-
----
-
-## 9. System Design — Scalability Considerations
-
-- **Stateless API layer** — the Express process holds no in-memory state; horizontally scalable
-  behind a load balancer. All shared state lives in Redis/Temporal.
-- **Temporal workers scale independently of the API** — under load, add more worker replicas
-  (`docker-compose up --scale worker=3`) to increase activity throughput without touching the API.
-- **Workflow ID strategy prevents duplicate work** — using a deterministic `workflowId` per city
-  (+ short TTL reuse policy) means concurrent requests for the same city within a cache window
-  can attach to the same in-flight workflow instead of hammering suppliers N times.
-- **Redis as the read path for filtering** — `GET /api/hotels?minPrice&maxPrice` after the first
-  aggregation hits Redis directly (`ZRANGEBYSCORE`), not Temporal, so filtered reads are cheap
-  and don't re-trigger orchestration. Workflow re-runs only when the cache is cold/expired.
-- **Sorted-set filtering is O(log N + M)** (N = total hotels for city, M = results in range) —
-  scales fine even as hotel catalogs grow; no full-list scans.
-- **Idempotent activities** — supplier fetch and cache-write activities are safe to retry without
-  side effects (cache write is a full overwrite of that city's keys, not an incremental append).
-- **Horizontal scaling path documented but not required for the assessment**: this design would
-  extend to a Temporal Cloud / managed Redis cluster with no code changes, only config.
-- **Future extension noted in README**: pagination for very large hotel catalogs, and a
-  supplier-adapter interface so adding Supplier C means implementing one interface, not touching
-  the workflow.
-
----
-
-## 10. Testing Strategy
-
-### 10.1 Unit tests (Jest)
+### 8.1 Unit tests (Jest)
 - `dedupeAndSelect()` — the core business logic — pure function tests:
   - Hotel in both suppliers, A cheaper → A wins.
   - Hotel in both, B cheaper → B wins.
@@ -238,22 +202,22 @@ Even for an assessment-scale service, apply baseline hardening:
   `ioredis-mock` client.
 - Request validation schemas (`zod`) — valid/invalid `minPrice`/`maxPrice`/`city` combinations.
 
-### 10.2 Activity tests
+### 8.2 Activity tests
 - Use Temporal's `TestWorkflowEnvironment` / mocked activity context to test `fetchSupplierA/B`
   activities against a mocked HTTP layer (`nock` or `msw`), including timeout and retry behavior.
 
-### 10.3 Workflow tests
+### 8.3 Workflow tests
 - Temporal's `@temporalio/testing` package to run `HotelAggregationWorkflow` in a test
   environment with mocked activities, asserting:
   - Both suppliers succeed → correct merged output.
   - One supplier activity fails all retries → workflow still completes with the other supplier's data.
   - Both suppliers fail → workflow completes with an empty list + logs the degraded state (not a hard failure).
 
-### 10.4 Integration tests
+### 8.4 Integration tests
 - Spin up the full `docker-compose` stack (API + worker + Temporal + Redis) in CI and run
   supertest-based HTTP tests against `/api/hotels`, `/health`, and the mock supplier endpoints.
 
-### 10.5 Manual/API testing — Postman
+### 8.5 Manual/API testing — Postman
 Postman collection (`hotel-orchestrator.postman_collection.json`) with:
 1. **Valid city with overlap** — `GET /api/hotels?city=delhi` → assert 200, array shape matches
    spec, overlapping hotel appears once with the cheaper price.
@@ -273,7 +237,7 @@ business rules (e.g. "no duplicate hotel names in response array").
 
 ---
 
-## 11. Docker / Deployment
+## 9. Docker / Deployment
 
 `docker-compose.yml` services:
 
@@ -281,8 +245,7 @@ business rules (e.g. "no duplicate hotel names in response array").
 |---|---|
 | `api` | Express app (routes, mock supplier endpoints, Temporal client, Redis client) |
 | `worker` | Temporal worker process (workflows + activities) — separate container from `api` so it can scale independently |
-| `temporal` | Temporal server (use the official `temporalio/auto-setup` image for simplicity) |
-| `temporal-ui` | (optional, dev convenience) Temporal Web UI |
+| `temporal` | Temporal server, backed by SQLite for persistence across restarts |
 | `redis` | Redis instance, persistent volume optional (cache-only, so ephemeral is fine) |
 
 - Single `Dockerfile` (multi-stage: `builder` compiles TypeScript, `runtime` copies `dist/` +
@@ -294,44 +257,3 @@ business rules (e.g. "no duplicate hotel names in response array").
 - `.dockerignore` excludes `node_modules`, `.git`, test files from the build context.
 
 ---
-
-## 12. Implementation Plan (suggested order)
-
-1. **Scaffold** — TS + Express project structure, ESLint/Prettier, `config.ts`, shared `types.ts`.
-2. **Mock suppliers** — `/supplierA/hotels`, `/supplierB/hotels` with seeded overlapping data +
-   `simulateDown` toggle.
-3. **Core dedupe logic** — pure `dedupeAndSelect()` function + unit tests (build/test this before
-   touching Temporal, since it's the highest-value logic to get right).
-4. **Redis layer** — connection wrapper, hash + sorted-set write/read helpers, key slugification.
-5. **Temporal workflow + activities** — `fetchSupplierA`, `fetchSupplierB`, `dedupeAndSelect`
-   (wrapping the pure function), `cacheToRedis`; retry policies and timeouts.
-6. **Worker process entrypoint** — registers workflow + activities, connects to Temporal server.
-7. **API routes** — `GET /api/hotels` (starts/awaits workflow, applies Redis filter), `GET /health`.
-8. **Error handling & logging middleware** — centralize before wiring more routes.
-9. **Security middleware** — helmet, rate limiting, validation schemas.
-10. **Dockerfile + docker-compose.yml** — get the full stack running with one command.
-11. **Integration tests** against the composed stack.
-12. **Postman collection** — author + export, verify all 5 scenarios pass against Docker Compose.
-13. **README** — setup, env vars, run instructions, architecture diagram, design tradeoffs, how
-    to run tests, how to import the Postman collection.
-14. **Bonus items** — `/health` with per-supplier status (can be done alongside step 7), review
-    logging coverage across all activities/workflow milestones (step 8).
-
----
-
-## 13. Bonus Points Coverage
-
-- ✅ **`/health` endpoint reporting both suppliers' health** — parallel-pings both mock supplier
-  endpoints with a short timeout, plus Redis/Temporal connectivity, per §4.
-- ✅ **Logging & error handling in activities/workflows** — structured logs at each activity
-  boundary and workflow milestone, graceful degradation instead of hard failures, per §6.
-
----
-
-## 14. Open Questions / Assumptions (call these out in the README)
-
-- Tie-break rule when both suppliers list identical price for a hotel (assumed: prefer lower
-  `commissionPct`, then Supplier A) — confirm if a different rule is expected.
-- Cache TTL duration (assumed 5 minutes) — tune based on how "live" supplier data is expected to be.
-- Whether concurrent requests for the same city should share one in-flight workflow or each
-  trigger a fresh one — assumed shared via deterministic workflow ID for efficiency.
