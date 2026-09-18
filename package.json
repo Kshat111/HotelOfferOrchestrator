@@ -1,0 +1,49 @@
+{
+  "name": "hotel-offer-orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Skeleton service for orchestrating hotel offers.",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "worker": "node dist/worker.js",
+    "test": "jest --runInBand --testPathIgnorePatterns=/test/integration/",
+    "test:integration": "jest --config jest.integration.config.cjs --runInBand",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@temporalio/activity": "^1.13.0",
+    "@temporalio/client": "^1.13.0",
+    "@temporalio/worker": "^1.13.0",
+    "@temporalio/workflow": "^1.13.0",
+    "axios": "^1.8.4",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.1.0",
+    "ioredis": "^5.6.1",
+    "pino": "^9.6.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.22.0",
+    "@types/express": "^5.0.1",
+    "@types/cors": "^2.8.17",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.13.10",
+    "@types/supertest": "^6.0.3",
+    "@temporalio/testing": "^1.13.0",
+    "eslint": "^9.22.0",
+    "ioredis-mock": "^8.13.0",
+    "jest": "^29.7.0",
+    "prettier": "^3.5.3",
+    "supertest": "^7.1.0",
+    "tsx": "^4.19.3",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.8.2",
+    "typescript-eslint": "^8.26.0"
+  }
+}

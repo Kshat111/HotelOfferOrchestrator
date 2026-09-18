@@ -1,0 +1,12 @@
+node_modules
+audit*
+.git
+dist
+coverage
+*.test.ts
+.env
+.vscode
+.idea
+*.code-workspace
+*.swp
+*.swo

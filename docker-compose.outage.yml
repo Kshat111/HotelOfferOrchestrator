@@ -1,0 +1,8 @@
+services:
+  api:
+    environment:
+      SIMULATE_SUPPLIER_DOWN: a
+
+  worker:
+    environment:
+      SIMULATE_SUPPLIER_DOWN: a
